@@ -1,9 +1,104 @@
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 const currentDir = dirname(fileURLToPath(import.meta.url));
+
+describe('baseline init migration', () => {
+  const migrationsDir = join(currentDir, '../prisma/migrations');
+  const initDir = '00000000000000_init';
+  const initSql = readFileSync(join(migrationsDir, initDir, 'migration.sql'), 'utf8');
+  // Stripped of `-- line comments` so substring assertions don't false-match
+  // names that are mentioned only in the migration's prose header.
+  const initSqlCode = initSql.replace(/--[^\n]*/g, '');
+
+  it('sorts before every dated migration so a fresh DB starts from it', () => {
+    const dirs = readdirSync(migrationsDir, { withFileTypes: true })
+      .filter((d) => d.isDirectory())
+      .map((d) => d.name)
+      .sort();
+    expect(dirs[0]).toBe(initDir);
+    // Sanity: there must be at least one dated migration after init,
+    // otherwise the "is this baseline still needed?" question changes.
+    expect(dirs.length).toBeGreaterThan(1);
+    expect(dirs[1]).toMatch(/^\d{14}_/);
+  });
+
+  it('creates every base table that later migrations ALTER', () => {
+    // The actual bug: pre-this-baseline, 20251212000000 ran ALTER TABLE
+    // "operations" against a table nothing had created. Lock in that every
+    // table referenced by a downstream ALTER exists in the baseline (or is
+    // dropped with IF EXISTS).
+    expect(initSql).toMatch(/CREATE TABLE IF NOT EXISTS "users"/);
+    expect(initSql).toMatch(/CREATE TABLE IF NOT EXISTS "operations"/);
+    expect(initSql).toMatch(/CREATE TABLE IF NOT EXISTS "user_sync_state"/);
+    expect(initSql).toMatch(/CREATE TABLE IF NOT EXISTS "sync_devices"/);
+  });
+
+  it('is idempotent so it can be applied to legacy databases', () => {
+    // Postgres has no ADD CONSTRAINT IF NOT EXISTS, so foreign keys must
+    // be wrapped in DO/EXCEPTION blocks. CREATE TABLE / CREATE INDEX must
+    // use IF NOT EXISTS. If this regresses, legacy prod DBs that already
+    // have the schema will fail when Prisma tries to apply this baseline.
+    const createStatements = initSql.match(/^CREATE (TABLE|INDEX|UNIQUE INDEX)/gim) ?? [];
+    expect(createStatements.length).toBeGreaterThan(0);
+    for (const stmt of createStatements) {
+      expect(stmt + ' IF NOT EXISTS').toMatch(/IF NOT EXISTS$/i);
+    }
+    // Every ALTER TABLE ADD CONSTRAINT must be inside a DO block.
+    const addConstraintCount = (initSql.match(/ADD CONSTRAINT/gi) ?? []).length;
+    const doBlockCount = (initSql.match(/EXCEPTION WHEN duplicate_object/gi) ?? [])
+      .length;
+    // Excludes the PRIMARY KEY constraints declared inline in CREATE TABLE,
+    // which don't need DO blocks because IF NOT EXISTS on the table covers
+    // them.
+    const fkAddConstraintCount = (initSql.match(/ALTER TABLE[^;]*ADD CONSTRAINT/gi) ?? [])
+      .length;
+    expect(fkAddConstraintCount).toBeGreaterThan(0);
+    expect(doBlockCount).toBe(fkAddConstraintCount);
+    expect(addConstraintCount).toBeGreaterThanOrEqual(fkAddConstraintCount);
+  });
+
+  it('omits indexes that 20260512000000 drops, to keep legacy DBs clean', () => {
+    // Two pre-baseline indexes were dropped by 20260512000000. Recreating
+    // them here would leave them present on legacy DBs after the baseline
+    // applies (those DBs already ran the drop). Fresh DBs end up without
+    // them too because 20260512000000 uses DROP INDEX IF EXISTS.
+    expect(initSqlCode).not.toContain('"operations_user_id_entity_type_entity_id_idx"');
+    expect(initSqlCode).not.toContain('"operations_user_id_server_seq_idx"');
+  });
+
+  it('omits columns/tables that later migrations add or drop with IF EXISTS', () => {
+    // is_payload_encrypted is added by 20251212000000, sync_import_reason
+    // by 20260329000000, payload_bytes by 20260514000001 — none of those
+    // ALTERs use IF NOT EXISTS, so the baseline must NOT pre-create them.
+    expect(initSqlCode).not.toContain('is_payload_encrypted');
+    expect(initSqlCode).not.toContain('sync_import_reason');
+    expect(initSqlCode).not.toContain('payload_bytes');
+    // storage_quota_bytes / reset_password_token / passkey_recovery_token
+    // are likewise added by later non-IF-NOT-EXISTS ALTERs.
+    expect(initSqlCode).not.toContain('storage_quota_bytes');
+    expect(initSqlCode).not.toContain('reset_password_token');
+    expect(initSqlCode).not.toContain('passkey_recovery_token');
+    // tombstones is dropped by 20251228000001 with IF EXISTS — omitting it
+    // keeps the fresh-DB end state identical to schema.prisma.
+    expect(initSqlCode).not.toContain('"tombstones"');
+    // passkeys table is created by 20260102000000, not by the baseline.
+    expect(initSqlCode).not.toMatch(/CREATE TABLE[^;]*"passkeys"/);
+    // parent_op_id is dropped by 20251228000000 with IF EXISTS — same logic.
+    expect(initSqlCode).not.toContain('parent_op_id');
+  });
+
+  it('keeps password_hash NOT NULL — 20260102000000 will relax it', () => {
+    // The baseline reflects pre-20251212 state. password_hash was NOT NULL
+    // back then; 20260102000000 (passkey support) makes it nullable. That
+    // ALTER is idempotent in Postgres so the column being already nullable
+    // wouldn't fail, but reflecting the historical state matters when this
+    // baseline runs on a legacy DB that was deployed pre-passkeys.
+    expect(initSql).toMatch(/"password_hash"\s+TEXT NOT NULL/);
+  });
+});
 
 describe('performance migrations', () => {
   it('adds the entity sequence index without a blocking or destructive migration', () => {
