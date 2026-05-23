@@ -4,7 +4,6 @@ on:
   push:
     branches:
       - master
-      - claude/sleepy-maxwell-eEyms
     paths:
       - '.dockerignore'
       - '.github/workflows/supersync-docker.yml'
