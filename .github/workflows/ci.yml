@@ -38,24 +38,26 @@ jobs:
 
   # This job will scan dependency manifest files
   # surfacing known-vulnerable versions of the packages declared or updated.
-  # Only runs on pull_request events as the action requires base/head refs
-  dependency-vulnerability-review:
-    name: Dependency Vulnerability Review
-    runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request'
-    steps:
-      - name: 'Checkout Repository'
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-        with:
-          persist-credentials: false
-      # work around for npm installs from git+https://github.com/johannesjo/J2M.git
-      - name: Reconfigure git to use HTTP authentication
-        run: >
-          git config --global url."https://github.com/".insteadOf
-          ssh://git@github.com/
-
-      - name: 'Dependency Review'
-        uses: actions/dependency-review-action@2031cfc080254a8a887f58cffee85186f0e49e48 # v4
+  # Disabled on this fork: actions/dependency-review-action requires GitHub
+  # Advanced Security (or a public repo with Dependency Graph) and fails on
+  # this fork. Re-enable by uncommenting the block below.
+  # dependency-vulnerability-review:
+  #   name: Dependency Vulnerability Review
+  #   runs-on: ubuntu-latest
+  #   if: github.event_name == 'pull_request'
+  #   steps:
+  #     - name: 'Checkout Repository'
+  #       uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+  #       with:
+  #         persist-credentials: false
+  #     # work around for npm installs from git+https://github.com/johannesjo/J2M.git
+  #     - name: Reconfigure git to use HTTP authentication
+  #       run: >
+  #         git config --global url."https://github.com/".insteadOf
+  #         ssh://git@github.com/
+  #
+  #     - name: 'Dependency Review'
+  #       uses: actions/dependency-review-action@2031cfc080254a8a887f58cffee85186f0e49e48 # v4
 
   lint:
     name: Lint
