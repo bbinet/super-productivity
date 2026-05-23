@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - master
+      - claude/sleepy-maxwell-eEyms
     paths:
       - '.dockerignore'
       - '.github/workflows/supersync-docker.yml'
@@ -58,13 +59,19 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Compute lowercase image owner
+        id: owner
+        shell: bash
+        run: echo "value=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_OUTPUT"
+
       - name: Extract metadata (tags)
         id: meta
         uses: docker/metadata-action@030e881283bb7a6894de51c315a6bfe6a94e05cf
         with:
-          images: ghcr.io/super-productivity/supersync
+          images: ghcr.io/${{ steps.owner.outputs.value }}/supersync
           tags: |
-            type=raw,value=latest
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=ref,event=branch
             type=sha,prefix={{branch}}-
 
       - name: Set up Docker Buildx
